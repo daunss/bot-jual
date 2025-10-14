@@ -1,0 +1,41 @@
+# Build artifacts
+bin/
+dist/
+build/
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Go coverage / profiling
+*.cover
+*.cov
+*.prof
+*.pprof
+
+# Local environment & secrets
+.env
+.env.*
+*.local
+device.db
+
+# Logs & runtime files
+logs/
+*.log
+
+# Debug helpers
+cmd/debug/
+
+# IDE / editor folders
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# WhatsApp / media caches
+data/
+*.sqlite3
+*.db-shm
+*.db-wal
