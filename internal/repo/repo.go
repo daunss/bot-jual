@@ -159,8 +159,36 @@ func (r *Repository) RunMigrations(ctx context.Context, filesystem fs.FS) error 
 	return ApplyMigrations(ctx, r.pool, filesystem)
 }
 
-// UpdateAPIKeyCooldown sets cooldown time for a given API key.
-func (r *Repository) UpdateAPIKeyCooldown(ctx context.Context, id string, until time.Time) error {
+// ListActiveGeminiKeys retrieves active Gemini API keys from the database.
+func (r *Repository) ListActiveGeminiKeys(ctx context.Context) ([]APIKey, error) {
+	const q = `
+SELECT id, value, provider, cooldown_until
+FROM api_keys
+WHERE provider = 'gemini' AND status = 'active'
+ORDER BY last_used_at ASC NULLS FIRST, created_at ASC;
+`
+	rows, err := r.pool.Query(ctx, q)
+	if err != nil {
+		return nil, fmt.Errorf("list active gemini keys: %w", err)
+	}
+	defer rows.Close()
+
+	var keys []APIKey
+	for rows.Next() {
+		var k APIKey
+		if err := rows.Scan(&k.ID, &k.Value, &k.Provider, &k.CooldownUntil); err != nil {
+			return nil, fmt.Errorf("scan active gemini key: %w", err)
+		}
+		keys = append(keys, k)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active gemini keys: %w", err)
+	}
+	return keys, nil
+}
+
+// SetCooldownUntil sets the cooldown time for a specific API key.
+func (r *Repository) SetCooldownUntil(ctx context.Context, id string, until time.Time) error {
 	const q = `UPDATE api_keys SET cooldown_until = $2, updated_at = NOW() WHERE id = $1`
 	ct, err := r.pool.Exec(ctx, q, id, until)
 	if err != nil {
@@ -170,4 +198,90 @@ func (r *Repository) UpdateAPIKeyCooldown(ctx context.Context, id string, until 
 		return fmt.Errorf("api key not found: %s", id)
 	}
 	return nil
+}
+
+// InsertOrder creates a new order record.
+func (r *Repository) InsertOrder(ctx context.Context, order Order) (*Order, error) {
+	const q = `
+INSERT INTO orders (user_id, order_ref, product_code, amount, status, metadata)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, created_at;
+`
+	var id string
+	var createdAt time.Time
+	err := r.pool.QueryRow(ctx, q,
+		order.UserID,
+		order.OrderRef,
+		order.ProductCode,
+		order.Amount,
+		order.Status,
+		order.Metadata,
+	).Scan(&id, &createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("insert order: %w", err)
+	}
+	order.ID = id
+	order.CreatedAt = createdAt
+	return &order, nil
+}
+
+// UpdateOrderStatus updates the status and metadata of an existing order.
+func (r *Repository) UpdateOrderStatus(ctx context.Context, orderRef, status string, metadata map[string]any) error {
+	const q = `
+UPDATE orders
+SET status = $2, metadata = metadata || $3, updated_at = NOW()
+WHERE order_ref = $1;
+`
+	ct, err := r.pool.Exec(ctx, q, orderRef, status, metadata)
+	if err != nil {
+		return fmt.Errorf("update order status: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return fmt.Errorf("order not found: %s", orderRef)
+	}
+	return nil
+}
+
+// InsertDeposit creates a new deposit record.
+func (r *Repository) InsertDeposit(ctx context.Context, deposit Deposit) (*Deposit, error) {
+	const q = `
+INSERT INTO deposits (user_id, deposit_ref, method, amount, status, metadata)
+VALUES ($1, $2, $3, $4, $5, $6)
+RETURNING id, created_at;
+`
+	var id string
+	var createdAt time.Time
+	err := r.pool.QueryRow(ctx, q,
+		deposit.UserID,
+		deposit.DepositRef,
+		deposit.Method,
+		deposit.Amount,
+		deposit.Status,
+		deposit.Metadata,
+	).Scan(&id, &createdAt)
+	if err != nil {
+		return nil, fmt.Errorf("insert deposit: %w", err)
+	}
+	deposit.ID = id
+	deposit.CreatedAt = createdAt
+	return &deposit, nil
+}
+
+// SyncGeminiKeys ensures the provided keys exist in the database.
+func (r *Repository) SyncGeminiKeys(ctx context.Context, keys []string) error {
+	if len(keys) == 0 {
+		return nil
+	}
+	return r.WithTx(ctx, func(tx pgx.Tx) error {
+		for _, key := range keys {
+			if _, err := tx.Exec(ctx, `
+INSERT INTO api_keys (value, provider, status)
+VALUES ($1, 'gemini', 'active')
+ON CONFLICT (value, provider) DO NOTHING;
+`, key); err != nil {
+				return fmt.Errorf("sync gemini key %q: %w", key[:5], err)
+			}
+		}
+		return nil
+	})
 }
