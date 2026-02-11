@@ -2215,6 +2215,23 @@ func friendlyAtlanticError(err error) string {
 	return msg
 }
 
+func isNotFoundAtlanticError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lower := strings.ToLower(err.Error())
+	if strings.Contains(lower, "not found") {
+		return true
+	}
+	if strings.Contains(lower, "tidak ditemukan") {
+		return true
+	}
+	if strings.Contains(lower, "transaksi tidak ditemukan") {
+		return true
+	}
+	return false
+}
+
 func extractAtlanticJSONMessage(raw string) string {
 	start := strings.Index(raw, "{")
 	end := strings.LastIndex(raw, "}")
@@ -2292,23 +2309,6 @@ func (e *Engine) sendCheckoutQRImage(ctx context.Context, to types.JID, userID s
 		return false
 	}
 	if err := e.gateway.SendImage(ctx, to, data, "image/png", caption); err != nil {
-
-func isNotFoundAtlanticError(err error) bool {
-	if err == nil {
-		return false
-	}
-	lower := strings.ToLower(err.Error())
-	if strings.Contains(lower, "not found") {
-		return true
-	}
-	if strings.Contains(lower, "tidak ditemukan") {
-		return true
-	}
-	if strings.Contains(lower, "transaksi tidak ditemukan") {
-		return true
-	}
-	return false
-}
 		e.logger.Warn("failed sending qr image", "error", err)
 		return false
 	}

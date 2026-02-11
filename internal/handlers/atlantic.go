@@ -339,20 +339,25 @@ func (p *AtlanticWebhookProcessor) autoFulfillOrderAfterDeposit(ctx context.Cont
 	}
 	if resp == nil {
 		err := lastErr
-	if err != nil {
-		p.logger.Error("auto create prepaid failed", "error", err, "order_ref", order.OrderRef, "deposit_ref", dep.DepositRef)
-		meta := cloneMetadata(order.Metadata)
-		meta["deposit_ref"] = dep.DepositRef
-		meta["auto_fulfilled"] = false
-		meta["auto_fulfill_error"] = err.Error()
-		meta["auto_fulfilled_at"] = time.Now().UTC().Format(time.RFC3339)
-		if strings.TrimSpace(depositMessage) != "" {
-			meta["deposit_message"] = depositMessage
+		if err == nil {
+			err = fmt.Errorf("atlantic transaction unavailable")
 		}
-		if err := p.repo.UpdateOrderStatus(ctx, order.OrderRef, "failed", meta); err != nil {
-			p.logger.Error("update order after auto-fulfill failure", "error", err, "order_ref", order.OrderRef, "deposit_ref", dep.DepositRef)
+		if err != nil {
+			p.logger.Error("auto create prepaid failed", "error", err, "order_ref", order.OrderRef, "deposit_ref", dep.DepositRef)
+			meta := cloneMetadata(order.Metadata)
+			meta["deposit_ref"] = dep.DepositRef
+			meta["auto_fulfilled"] = false
+			meta["auto_fulfill_error"] = err.Error()
+			meta["auto_fulfilled_at"] = time.Now().UTC().Format(time.RFC3339)
+			if strings.TrimSpace(depositMessage) != "" {
+				meta["deposit_message"] = depositMessage
+			}
+			if err := p.repo.UpdateOrderStatus(ctx, order.OrderRef, "failed", meta); err != nil {
+				p.logger.Error("update order after auto-fulfill failure", "error", err, "order_ref", order.OrderRef, "deposit_ref", dep.DepositRef)
+			}
+			p.notifyUser(ctx, order.UserID, fmt.Sprintf("Deposit %s sudah diterima, tapi transaksi %s gagal dibuat: %v. Tolong hubungi admin ya.", dep.DepositRef, order.OrderRef, err))
+			return true
 		}
-		p.notifyUser(ctx, order.UserID, fmt.Sprintf("Deposit %s sudah diterima, tapi transaksi %s gagal dibuat: %v. Tolong hubungi admin ya.", dep.DepositRef, order.OrderRef, err))
 		return true
 	}
 
