@@ -578,6 +578,9 @@ func (e *Engine) handleCreateDeposit(ctx context.Context, evt *events.Message, u
 	if method == "" {
 		method = defaultMethod
 	}
+	if method == "qris" && defaultMethod != "" && defaultMethod != "qris" {
+		method = defaultMethod
+	}
 	if method == "deposit" {
 		method = ""
 	}
@@ -2016,6 +2019,9 @@ func (e *Engine) executePrepaidWithCheckout(ctx context.Context, evt *events.Mes
 	depositType := e.cfg.DefaultDepositType
 	if strings.EqualFold(method, "BRI") || strings.EqualFold(method, "bri") {
 		depositType = "bank"
+	}
+	if strings.EqualFold(method, "qris") && e.defaultDepositMethod() != "" && !strings.EqualFold(e.defaultDepositMethod(), "qris") {
+		method = e.defaultDepositMethod()
 	}
 	depResp, err := e.atl.CreateDeposit(ctx, atl.DepositRequest{
 		Method: method,
