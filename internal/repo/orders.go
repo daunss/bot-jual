@@ -7,7 +7,7 @@ import (
 )
 
 // InsertOrder stores a new order record.
-func (r *Repository) InsertOrder(ctx context.Context, order Order) (*Order, error) {
+func (r *PostgresRepository) InsertOrder(ctx context.Context, order Order) (*Order, error) {
 	meta, err := toJSON(order.Metadata)
 	if err != nil {
 		return nil, err
@@ -39,7 +39,7 @@ RETURNING id, user_id, order_ref, product_code, amount, fee, status, metadata, c
 }
 
 // UpdateOrderStatus updates order metadata/status.
-func (r *Repository) UpdateOrderStatus(ctx context.Context, orderRef, status string, metadata map[string]any) error {
+func (r *PostgresRepository) UpdateOrderStatus(ctx context.Context, orderRef, status string, metadata map[string]any) error {
 	meta, err := toJSON(metadata)
 	if err != nil {
 		return err
@@ -60,7 +60,7 @@ WHERE order_ref = $1;
 }
 
 // GetOrderByRef retrieves an order by reference.
-func (r *Repository) GetOrderByRef(ctx context.Context, ref string) (*Order, error) {
+func (r *PostgresRepository) GetOrderByRef(ctx context.Context, ref string) (*Order, error) {
 	const q = `
 SELECT id, user_id, order_ref, product_code, amount, fee, status, metadata, created_at, updated_at
 FROM orders
@@ -78,7 +78,7 @@ LIMIT 1;
 }
 
 // InsertDeposit stores a new deposit record.
-func (r *Repository) InsertDeposit(ctx context.Context, dep Deposit) (*Deposit, error) {
+func (r *PostgresRepository) InsertDeposit(ctx context.Context, dep Deposit) (*Deposit, error) {
 	meta, err := toJSON(dep.Metadata)
 	if err != nil {
 		return nil, err
@@ -113,7 +113,7 @@ RETURNING id, user_id, deposit_ref, method, amount, status, metadata, created_at
 }
 
 // UpdateDepositStatus updates deposit meta/status.
-func (r *Repository) UpdateDepositStatus(ctx context.Context, ref, status string, metadata map[string]any) error {
+func (r *PostgresRepository) UpdateDepositStatus(ctx context.Context, ref, status string, metadata map[string]any) error {
 	meta, err := toJSON(metadata)
 	if err != nil {
 		return err
@@ -134,7 +134,7 @@ WHERE deposit_ref = $1;
 }
 
 // GetDepositByRef retrieves deposit by reference.
-func (r *Repository) GetDepositByRef(ctx context.Context, ref string) (*Deposit, error) {
+func (r *PostgresRepository) GetDepositByRef(ctx context.Context, ref string) (*Deposit, error) {
 	const q = `
 SELECT id, user_id, deposit_ref, method, amount, status, metadata, created_at, updated_at
 FROM deposits
@@ -152,7 +152,7 @@ LIMIT 1;
 }
 
 // ListOrdersAwaitingDeposit returns orders waiting for the specified deposit.
-func (r *Repository) ListOrdersAwaitingDeposit(ctx context.Context, depositRef string) ([]Order, error) {
+func (r *PostgresRepository) ListOrdersAwaitingDeposit(ctx context.Context, depositRef string) ([]Order, error) {
 	const q = `
 SELECT id, user_id, order_ref, product_code, amount, fee, status, metadata, created_at, updated_at
 FROM orders

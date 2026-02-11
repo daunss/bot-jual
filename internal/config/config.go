@@ -15,6 +15,7 @@ type Config struct {
 	LogLevel                         string
 	HTTPListenAddr                   string
 	DatabaseURL                      string
+	IsSQLite                         bool
 	SupabaseSchema                   string
 	WhatsAppStorePath                string
 	WhatsAppDeviceJID                string
@@ -102,6 +103,10 @@ func Load() (*Config, error) {
 		if percentVal < 0 {
 			percentVal = 0
 		}
+		// Normalize if user provides percent (e.g. 1.4 for 1.4%).
+		if percentVal > 0.5 {
+			percentVal = percentVal / 100
+		}
 		cfg.AtlanticDepositFeePercent = percentVal
 	}
 
@@ -141,6 +146,11 @@ func Load() (*Config, error) {
 	}
 
 	cfg.AtlanticBaseURL = strings.TrimRight(cfg.AtlanticBaseURL, "/")
+
+	// Check if DatabaseURL indicates SQLite
+	if strings.HasPrefix(cfg.DatabaseURL, "file:") || strings.HasSuffix(cfg.DatabaseURL, ".db") {
+		cfg.IsSQLite = true
+	}
 
 	return cfg, nil
 }

@@ -24,7 +24,7 @@ type Notifier interface {
 
 // AtlanticWebhookProcessor processes Atlantic webhook callbacks.
 type AtlanticWebhookProcessor struct {
-	repo     *repo.Repository
+	repo     repo.Repository
 	logger   *slog.Logger
 	metrics  *metrics.Metrics
 	notifier Notifier
@@ -32,7 +32,7 @@ type AtlanticWebhookProcessor struct {
 }
 
 // NewAtlanticWebhookProcessor constructs processor.
-func NewAtlanticWebhookProcessor(repository *repo.Repository, notifier Notifier, metrics *metrics.Metrics, logger *slog.Logger, atlClient *atl.Client) *AtlanticWebhookProcessor {
+func NewAtlanticWebhookProcessor(repository repo.Repository, notifier Notifier, metrics *metrics.Metrics, logger *slog.Logger, atlClient *atl.Client) *AtlanticWebhookProcessor {
 	return &AtlanticWebhookProcessor{
 		repo:     repository,
 		notifier: notifier,

@@ -25,7 +25,7 @@ type Handlers struct {
 
 // Dependencies exposes core dependencies to handlers that need them.
 type Dependencies struct {
-	Repository *repo.Repository
+	Repository repo.Repository
 	Redis      *cache.Redis
 	NLU        *nlu.Client
 	Atlantic   *atl.Client

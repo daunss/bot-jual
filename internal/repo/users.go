@@ -6,7 +6,7 @@ import (
 )
 
 // GetUserByID returns user by internal identifier.
-func (r *Repository) GetUserByID(ctx context.Context, id string) (*User, error) {
+func (r *PostgresRepository) GetUserByID(ctx context.Context, id string) (*User, error) {
 	const q = `
 SELECT id, wa_id, wa_jid, display_name, phone_number, language_preference, timezone, created_at, updated_at
 FROM users

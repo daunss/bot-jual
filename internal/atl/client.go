@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -202,6 +203,57 @@ func (c *Client) PriceList(ctx context.Context, productType string, forceRefresh
 	return items, nil
 }
 
+// FetchAndSaveAllProducts fetches all products (prabayar + pascabayar) and saves to a JSON file.
+func (c *Client) FetchAndSaveAllProducts(ctx context.Context, outputPath string) error {
+	prabayar, err := c.PriceList(ctx, "prabayar", true)
+	if err != nil {
+		return fmt.Errorf("fetch prabayar: %w", err)
+	}
+	pascabayar, err := c.PriceList(ctx, "pascabayar", true)
+	if err != nil {
+		c.logger.Warn("pascabayar price list fetch failed, continuing with prabayar only", "error", err)
+	}
+
+	type catalogEntry struct {
+		Code     string  `json:"code"`
+		Name     string  `json:"name"`
+		Category string  `json:"category"`
+		Provider string  `json:"provider"`
+		Nominal  string  `json:"nominal,omitempty"`
+		Price    float64 `json:"price"`
+		Status   string  `json:"status"`
+		Type     string  `json:"type"`
+	}
+
+	entries := make([]catalogEntry, 0, len(prabayar)+len(pascabayar))
+	for _, p := range prabayar {
+		entries = append(entries, catalogEntry{
+			Code: p.Code, Name: p.Name, Category: p.Category,
+			Provider: p.Provider, Nominal: p.Nominal,
+			Price: p.Price, Status: p.Status, Type: "prabayar",
+		})
+	}
+	for _, p := range pascabayar {
+		entries = append(entries, catalogEntry{
+			Code: p.Code, Name: p.Name, Category: p.Category,
+			Provider: p.Provider, Nominal: p.Nominal,
+			Price: p.Price, Status: p.Status, Type: "pascabayar",
+		})
+	}
+
+	data, err := json.MarshalIndent(entries, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal catalog: %w", err)
+	}
+
+	if err := os.WriteFile(outputPath, data, 0644); err != nil {
+		return fmt.Errorf("write catalog file: %w", err)
+	}
+
+	c.logger.Info("product catalog saved", "path", outputPath, "total_products", len(entries))
+	return nil
+}
+
 func normalizeProductType(productType string) string {
 	p := strings.TrimSpace(strings.ToLower(productType))
 	if p == "" {
@@ -263,6 +315,7 @@ type CreatePrepaidRequest struct {
 	CustomerID  string `json:"customer_id"`
 	RefID       string `json:"ref_id"`
 	Amount      int64  `json:"amount,omitempty"`
+	LimitPrice  int64  `json:"limit_price,omitempty"`
 	PhoneNumber string `json:"phone_number,omitempty"`
 	Note        string `json:"note,omitempty"`
 }
@@ -287,6 +340,9 @@ func (c *Client) CreatePrepaidTransaction(ctx context.Context, req CreatePrepaid
 	if req.Amount > 0 {
 		form.Set("amount", strconv.FormatInt(req.Amount, 10))
 	}
+	if req.LimitPrice > 0 {
+		form.Set("limit_price", strconv.FormatInt(req.LimitPrice, 10))
+	}
 	if req.PhoneNumber != "" {
 		form.Set("phone", req.PhoneNumber)
 	}
@@ -304,6 +360,8 @@ func (c *Client) CreatePrepaidTransaction(ctx context.Context, req CreatePrepaid
 // TransactionStatusRequest holds parameters to check Atlantic transaction.
 type TransactionStatusRequest struct {
 	RefID string `json:"ref_id"`
+	ID    string `json:"id"`
+	Type  string `json:"type"`
 }
 
 // TransactionStatusResponse details transaction status.
@@ -319,7 +377,15 @@ type TransactionStatusResponse struct {
 // TransactionStatus fetches status of a transaction.
 func (c *Client) TransactionStatus(ctx context.Context, req TransactionStatusRequest) (*TransactionStatusResponse, error) {
 	form := url.Values{}
-	form.Set("reff_id", req.RefID)
+	if strings.TrimSpace(req.ID) != "" {
+		form.Set("id", req.ID)
+	}
+	if strings.TrimSpace(req.RefID) != "" {
+		form.Set("reff_id", req.RefID)
+	}
+	if strings.TrimSpace(req.Type) != "" {
+		form.Set("type", req.Type)
+	}
 
 	env, err := c.postForm(ctx, "/transaksi/status", form)
 	if err != nil {
@@ -396,8 +462,10 @@ func (c *Client) BillInquiry(ctx context.Context, req BillInquiryRequest) (*Bill
 
 // BillPaymentRequest triggers bill payment.
 type BillPaymentRequest struct {
-	RefID string `json:"ref_id"`
-	PIN   string `json:"pin,omitempty"`
+	RefID       string `json:"ref_id"`
+	ProductCode string `json:"product_code,omitempty"`
+	CustomerID  string `json:"customer_id,omitempty"`
+	PIN         string `json:"pin,omitempty"`
 }
 
 // BillPaymentResponse describes bill payment outcome.
@@ -411,7 +479,15 @@ type BillPaymentResponse struct {
 // BillPayment pays a bill previously inquired.
 func (c *Client) BillPayment(ctx context.Context, req BillPaymentRequest) (*BillPaymentResponse, error) {
 	form := url.Values{}
-	form.Set("reff_id", req.RefID)
+	if req.RefID != "" {
+		form.Set("reff_id", req.RefID)
+	}
+	if req.ProductCode != "" {
+		form.Set("code", req.ProductCode)
+	}
+	if req.CustomerID != "" {
+		form.Set("customer_no", req.CustomerID)
+	}
 	if req.PIN != "" {
 		form.Set("pin", req.PIN)
 	}
@@ -521,6 +597,172 @@ func (c *Client) CreateDeposit(ctx context.Context, req DepositRequest) (*Deposi
 	return resp, nil
 }
 
+// DepositMethodRequest holds optional filters for deposit methods.
+type DepositMethodRequest struct {
+	Type   string `json:"type,omitempty"`
+	Method string `json:"method,omitempty"`
+}
+
+// DepositMethod describes a deposit method entry.
+type DepositMethod struct {
+	Method     string         `json:"method"`
+	Type       string         `json:"type"`
+	Name       string         `json:"name"`
+	Min        float64        `json:"min"`
+	Max        float64        `json:"max"`
+	Fee        float64        `json:"fee"`
+	FeePercent float64        `json:"fee_percent"`
+	Status     string         `json:"status"`
+	ImgURL     string         `json:"img_url"`
+	Raw        map[string]any `json:"raw"`
+}
+
+// DepositMethods fetches available deposit methods.
+func (c *Client) DepositMethods(ctx context.Context, req DepositMethodRequest) ([]DepositMethod, error) {
+	form := url.Values{}
+	if req.Type != "" {
+		form.Set("type", req.Type)
+	}
+	if req.Method != "" {
+		form.Set("metode", req.Method)
+		form.Set("method", req.Method)
+	}
+
+	env, err := c.postForm(ctx, "/deposit/metode", form)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := decodeSlice(env.Data)
+	if err != nil {
+		return nil, err
+	}
+
+	methods := make([]DepositMethod, 0, len(rows))
+	for _, row := range rows {
+		methods = append(methods, DepositMethod{
+			Method:     firstString(row, "metode", "method", "code"),
+			Type:       firstString(row, "type"),
+			Name:       firstString(row, "name", "nama"),
+			Min:        firstFloat(row, "min"),
+			Max:        firstFloat(row, "max"),
+			Fee:        firstFloat(row, "fee"),
+			FeePercent: firstFloat(row, "fee_persen", "fee_percent"),
+			Status:     normalizeAvailabilityStatus(firstString(row, "status")),
+			ImgURL:     firstString(row, "img_url", "image"),
+			Raw:        row,
+		})
+	}
+	return methods, nil
+}
+
+// DepositStatusResponse contains deposit status info.
+type DepositStatusResponse struct {
+	ID        string         `json:"id"`
+	RefID     string         `json:"ref_id"`
+	Status    string         `json:"status"`
+	Method    string         `json:"method"`
+	Amount    float64        `json:"amount"`
+	Fee       float64        `json:"fee"`
+	NetAmount float64        `json:"net_amount"`
+	CreatedAt string         `json:"created_at"`
+	Raw       map[string]any `json:"raw"`
+}
+
+// DepositStatus checks deposit status by ID.
+func (c *Client) DepositStatus(ctx context.Context, depositID string) (*DepositStatusResponse, error) {
+	form := url.Values{}
+	form.Set("id", depositID)
+	env, err := c.postForm(ctx, "/deposit/status", form)
+	if err != nil {
+		return nil, err
+	}
+	data, err := decodeMap(env.Data)
+	if err != nil {
+		return nil, err
+	}
+	resp := &DepositStatusResponse{
+		ID:        firstString(data, "id"),
+		RefID:     firstString(data, "reff_id", "ref_id"),
+		Status:    normalizeTransactionStatus(firstString(data, "status", "state")),
+		Method:    firstString(data, "metode", "method"),
+		Amount:    firstFloat(data, "nominal", "amount"),
+		Fee:       firstFloat(data, "fee", "admin_fee"),
+		NetAmount: firstFloat(data, "get_balance", "net_amount", "saldo_masuk"),
+		CreatedAt: firstString(data, "created_at"),
+		Raw:       data,
+	}
+	return resp, nil
+}
+
+// DepositCancelResponse contains cancel result.
+type DepositCancelResponse struct {
+	ID        string         `json:"id"`
+	Status    string         `json:"status"`
+	CreatedAt string         `json:"created_at"`
+	Raw       map[string]any `json:"raw"`
+}
+
+// CancelDeposit cancels a pending deposit.
+func (c *Client) CancelDeposit(ctx context.Context, depositID string) (*DepositCancelResponse, error) {
+	form := url.Values{}
+	form.Set("id", depositID)
+	env, err := c.postForm(ctx, "/deposit/cancel", form)
+	if err != nil {
+		return nil, err
+	}
+	data, err := decodeMap(env.Data)
+	if err != nil {
+		return nil, err
+	}
+	resp := &DepositCancelResponse{
+		ID:        firstString(data, "id"),
+		Status:    normalizeTransactionStatus(firstString(data, "status", "state")),
+		CreatedAt: firstString(data, "created_at"),
+		Raw:       data,
+	}
+	return resp, nil
+}
+
+// DepositInstantResponse contains instant payout info.
+type DepositInstantResponse struct {
+	ID            string         `json:"id"`
+	RefID         string         `json:"ref_id"`
+	Status        string         `json:"status"`
+	Amount        float64        `json:"amount"`
+	HandlingFee   float64        `json:"handling_fee"`
+	TotalFee      float64        `json:"total_fee"`
+	TotalReceived float64        `json:"total_received"`
+	CreatedAt     string         `json:"created_at"`
+	Raw           map[string]any `json:"raw"`
+}
+
+// DepositInstant processes instant payout or fee check.
+func (c *Client) DepositInstant(ctx context.Context, depositID string, action bool) (*DepositInstantResponse, error) {
+	form := url.Values{}
+	form.Set("id", depositID)
+	form.Set("action", strconv.FormatBool(action))
+	env, err := c.postForm(ctx, "/deposit/instant", form)
+	if err != nil {
+		return nil, err
+	}
+	data, err := decodeMap(env.Data)
+	if err != nil {
+		return nil, err
+	}
+	resp := &DepositInstantResponse{
+		ID:            firstString(data, "id"),
+		RefID:         firstString(data, "reff_id", "ref_id"),
+		Status:        normalizeTransactionStatus(firstString(data, "status", "state")),
+		Amount:        firstFloat(data, "nominal", "amount"),
+		HandlingFee:   firstFloat(data, "penanganan", "handling_fee"),
+		TotalFee:      firstFloat(data, "total_fee", "fee"),
+		TotalReceived: firstFloat(data, "total_diterima", "total_received"),
+		CreatedAt:     firstString(data, "created_at"),
+		Raw:           data,
+	}
+	return resp, nil
+}
+
 // TransferRequest holds transfer parameters.
 type TransferRequest struct {
 	BankCode    string  `json:"bank_code"`
@@ -575,6 +817,102 @@ func (c *Client) CreateTransfer(ctx context.Context, req TransferRequest) (*Tran
 	}
 	if resp.Message == "" {
 		resp.Message = strings.TrimSpace(env.Message)
+	}
+	return resp, nil
+}
+
+// TransferBank describes a bank or e-wallet entry.
+type TransferBank struct {
+	ID   string         `json:"id"`
+	Code string         `json:"code"`
+	Name string         `json:"name"`
+	Type string         `json:"type"`
+	Raw  map[string]any `json:"raw"`
+}
+
+// TransferBankList retrieves list of banks and e-wallets.
+func (c *Client) TransferBankList(ctx context.Context) ([]TransferBank, error) {
+	env, err := c.postForm(ctx, "/transfer/bank_list", url.Values{})
+	if err != nil {
+		return nil, err
+	}
+	rows, err := decodeSlice(env.Data)
+	if err != nil {
+		return nil, err
+	}
+
+	items := make([]TransferBank, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, TransferBank{
+			ID:   firstString(row, "id"),
+			Code: firstString(row, "bank_code", "code"),
+			Name: firstString(row, "bank_name", "name"),
+			Type: firstString(row, "type"),
+			Raw:  row,
+		})
+	}
+	return items, nil
+}
+
+// TransferCheckResponse describes account verification result.
+type TransferCheckResponse struct {
+	BankCode  string         `json:"bank_code"`
+	AccountNo string         `json:"account_no"`
+	OwnerName string         `json:"owner_name"`
+	Status    string         `json:"status"`
+	Raw       map[string]any `json:"raw"`
+}
+
+// TransferCheckAccount validates account number for a bank/e-wallet.
+func (c *Client) TransferCheckAccount(ctx context.Context, bankCode, accountNumber string) (*TransferCheckResponse, error) {
+	form := url.Values{}
+	form.Set("bank_code", bankCode)
+	form.Set("account_number", accountNumber)
+	env, err := c.postForm(ctx, "/transfer/cek_rekening", form)
+	if err != nil {
+		return nil, err
+	}
+	data, err := decodeMap(env.Data)
+	if err != nil {
+		return nil, err
+	}
+	resp := &TransferCheckResponse{
+		BankCode:  firstString(data, "kode_bank", "bank_code"),
+		AccountNo: firstString(data, "nomor_akun", "account_number"),
+		OwnerName: firstString(data, "nama_pemilik", "account_name"),
+		Status:    normalizeTransactionStatus(firstString(data, "status")),
+		Raw:       data,
+	}
+	return resp, nil
+}
+
+// TransferStatusResponse contains transfer status info.
+type TransferStatusResponse struct {
+	ID      string         `json:"id"`
+	RefID   string         `json:"ref_id"`
+	Status  string         `json:"status"`
+	Message string         `json:"message"`
+	Raw     map[string]any `json:"raw"`
+}
+
+// TransferStatus checks status of a transfer by ID.
+func (c *Client) TransferStatus(ctx context.Context, transferID string) (*TransferStatusResponse, error) {
+	form := url.Values{}
+	form.Set("id", transferID)
+	env, err := c.postForm(ctx, "/transfer/status", form)
+	if err != nil {
+		return nil, err
+	}
+	data, err := decodeMap(env.Data)
+	if err != nil {
+		return nil, err
+	}
+	resp := &TransferStatusResponse{
+		ID:      firstString(data, "id"),
+		RefID:   firstString(data, "reff_id", "ref_id"),
+		Status:  normalizeTransactionStatus(firstString(data, "status", "state")),
+		Message: firstString(data, "message", "info", "description"),
+		Raw:     data,
 	}
 	return resp, nil
 }
@@ -766,6 +1104,34 @@ func decodeMap(raw json.RawMessage) (map[string]any, error) {
 	return out, nil
 }
 
+func decodeSlice(raw json.RawMessage) ([]map[string]any, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return nil, nil
+	}
+	var out []map[string]any
+	if err := json.Unmarshal(raw, &out); err == nil {
+		return out, nil
+	}
+	var withNumbers []map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &withNumbers); err != nil {
+		return nil, err
+	}
+	result := make([]map[string]any, 0, len(withNumbers))
+	for _, row := range withNumbers {
+		decoded := make(map[string]any, len(row))
+		for key, val := range row {
+			var anyVal any
+			if err := json.Unmarshal(val, &anyVal); err == nil {
+				decoded[key] = anyVal
+			} else {
+				decoded[key] = string(val)
+			}
+		}
+		result = append(result, decoded)
+	}
+	return result, nil
+}
+
 func extractNested(data map[string]any, keys ...string) map[string]any {
 	for _, key := range keys {
 		if val, ok := data[key]; ok {
@@ -858,7 +1224,7 @@ func normalizeAvailabilityStatus(status string) string {
 		return "available"
 	case "pending", "process", "diproses", "processing":
 		return "processing"
-	case "failed", "gagal", "unavailable", "off", "soldout":
+	case "failed", "gagal", "unavailable", "off", "soldout", "empty":
 		return "unavailable"
 	default:
 		return strings.ToLower(strings.TrimSpace(status))
@@ -889,8 +1255,6 @@ func toString(val any) string {
 	switch v := val.(type) {
 	case string:
 		return strings.TrimSpace(v)
-	case fmt.Stringer:
-		return strings.TrimSpace(v.String())
 	case float64:
 		if v == 0 {
 			return ""
@@ -908,6 +1272,8 @@ func toString(val any) string {
 		return strconv.FormatInt(v, 10)
 	case json.Number:
 		return v.String()
+	case fmt.Stringer:
+		return strings.TrimSpace(v.String())
 	default:
 		return ""
 	}

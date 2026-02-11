@@ -9,7 +9,7 @@ import (
 const providerGemini = "gemini"
 
 // SyncGeminiKeys ensures provided keys exist in database with matching priority.
-func (r *Repository) SyncGeminiKeys(ctx context.Context, keys []string) error {
+func (r *PostgresRepository) SyncGeminiKeys(ctx context.Context, keys []string) error {
 	if len(keys) == 0 {
 		return fmt.Errorf("no gemini keys provided")
 	}
@@ -22,7 +22,7 @@ func (r *Repository) SyncGeminiKeys(ctx context.Context, keys []string) error {
 	return nil
 }
 
-func (r *Repository) upsertAPIKey(ctx context.Context, provider, value string, priority int) error {
+func (r *PostgresRepository) upsertAPIKey(ctx context.Context, provider, value string, priority int) error {
 	const q = `
 INSERT INTO api_keys (provider, value, priority)
 VALUES ($1, $2, $3)
@@ -37,7 +37,7 @@ SET priority = EXCLUDED.priority,
 }
 
 // ListActiveGeminiKeys returns Gemini API keys ordered by priority.
-func (r *Repository) ListActiveGeminiKeys(ctx context.Context) ([]APIKey, error) {
+func (r *PostgresRepository) ListActiveGeminiKeys(ctx context.Context) ([]APIKey, error) {
 	const q = `
 SELECT id, provider, value, priority, cooldown_until, created_at, updated_at
 FROM api_keys
@@ -65,7 +65,7 @@ ORDER BY priority ASC;
 }
 
 // ClearCooldown resets cooldown for a key.
-func (r *Repository) ClearCooldown(ctx context.Context, id string) error {
+func (r *PostgresRepository) ClearCooldown(ctx context.Context, id string) error {
 	const q = `UPDATE api_keys SET cooldown_until = NULL, updated_at = NOW() WHERE id = $1`
 	ct, err := r.pool.Exec(ctx, q, id)
 	if err != nil {
@@ -78,7 +78,7 @@ func (r *Repository) ClearCooldown(ctx context.Context, id string) error {
 }
 
 // SetCooldownUntil updates cooldown until specific time.
-func (r *Repository) SetCooldownUntil(ctx context.Context, id string, until time.Time) error {
+func (r *PostgresRepository) SetCooldownUntil(ctx context.Context, id string, until time.Time) error {
 	const q = `UPDATE api_keys SET cooldown_until = $2, updated_at = NOW() WHERE id = $1`
 	ct, err := r.pool.Exec(ctx, q, id, until)
 	if err != nil {

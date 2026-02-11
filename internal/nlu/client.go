@@ -28,7 +28,7 @@ const (
 
 // Client communicates with Gemini API to perform intent extraction and response generation.
 type Client struct {
-	repo        *repo.Repository
+	repo        repo.Repository
 	logger      *slog.Logger
 	metrics     *metrics.Metrics
 	httpClient  *http.Client
@@ -56,7 +56,7 @@ type Config struct {
 }
 
 // New creates a Gemini client.
-func New(repository *repo.Repository, logger *slog.Logger, metrics *metrics.Metrics, cfg Config) *Client {
+func New(repository repo.Repository, logger *slog.Logger, metrics *metrics.Metrics, cfg Config) *Client {
 	return &Client{
 		repo:        repository,
 		logger:      logger.With("component", "nlu"),
@@ -65,7 +65,7 @@ func New(repository *repo.Repository, logger *slog.Logger, metrics *metrics.Metr
 		model:       cfg.Model,
 		timeout:     cfg.Timeout,
 		cooldown:    cfg.Cooldown,
-		keyCacheTTL: 1 * time.Minute,
+		keyCacheTTL: 10 * time.Second, // Short TTL so cooldown state refreshes quickly during rotation
 	}
 }
 
@@ -243,13 +243,14 @@ func buildIntentPrompt(input IntentInput) geminiRequest {
 	sb.WriteString("Field \"reply\" bila diisi harus terdengar ramah (contoh: \"Sip, aku bantu cek dulu ya.\").\n\n")
 	sb.WriteString("Format JSON:\n")
 	sb.WriteString(`{"intent":"string","confidence":0.0,"reply":"string","requires_confirmation":false,"entities":{"key":"value"},"tool_call":{"name":"tool_name","arguments":{"arg":"value"}}}` + "\n\n")
-	sb.WriteString("Daftar intent utama: smalltalk_greeting, price_lookup, budget_filter, create_prepaid, check_bill, pay_bill, create_deposit, create_transfer, catalog_all, check_balance, help, fallback.\n")
+	sb.WriteString("Daftar intent utama: smalltalk_greeting, price_lookup, budget_filter, create_prepaid, check_bill, pay_bill, check_status, create_deposit, create_transfer, catalog_all, check_balance, help, fallback.\n")
 	sb.WriteString("Jika tidak yakin gunakan intent \"fallback\".\n\n")
 	sb.WriteString("Aturan entitas per intent:\n")
 	sb.WriteString("- price_lookup: entities.product_query wajib, isi nama/keyword produk; entities.product_type boleh \"prabayar\" atau \"pascabayar\" (default \"prabayar\"), entities.provider opsional.\n")
 	sb.WriteString("- budget_filter: entities.budget wajib (nominal), entities.product_type opsional.\n")
-	sb.WriteString("- create_prepaid: entities.product_code, entities.customer_id (format akhir target; gabungkan ID dan server bila ada, contoh \"12345678(1234)\"), entities.payment_method (deposit/saldo/qris), opsional entities.customer_zone, entities.ref_id, dan entities.limit_price.\n")
+	sb.WriteString("- create_prepaid: entities.product_code, entities.customer_id (format akhir target; gabungkan ID dan server bila ada, contoh \"12345678(1234)\"), entities.payment_method (deposit/saldo/qris/bri), opsional entities.customer_zone, entities.ref_id, dan entities.limit_price.\n")
 	sb.WriteString("- check_bill/pay_bill: gunakan entities.product_code dan entities.customer_id (check) atau entities.ref_id (pay).\n")
+	sb.WriteString("- check_status: gunakan entities.ref_id atau entities.id. entities.product_type boleh \"prabayar\" atau \"pascabayar\".\n")
 	sb.WriteString("- create_deposit: entities.method/metode dan entities.amount/nominal wajib, entities.type opsional.\n")
 	sb.WriteString("- create_transfer: entities.bank_code, entities.account_no, entities.account_name, entities.amount.\n")
 	sb.WriteString("- catalog_all: tidak butuh entitas; gunakan saat user minta semua produk/menu.\n")
@@ -258,6 +259,7 @@ func buildIntentPrompt(input IntentInput) geminiRequest {
 	sb.WriteString("Nama tool harus diambil dari daftar berikut dan argument wajib dalam lowercase key:\n")
 	sb.WriteString("- price_list(type, code?)\n")
 	sb.WriteString("- transaksi_create(code, target, metode?, limit_price?, reff_id?, server?)\n")
+	sb.WriteString("- transaksi_status(id?, reff_id?, type?)\n")
 	sb.WriteString("- tagihan_cek(code, customer_no, reff_id?)\n")
 	sb.WriteString("- tagihan_bayar(code, customer_no, reff_id)\n")
 	sb.WriteString("- deposit_create(metode, nominal, type?, reff_id?)\n")
@@ -271,7 +273,36 @@ func buildIntentPrompt(input IntentInput) geminiRequest {
 	sb.WriteString("- Jika user menyebut dua nomor berurutan (contoh: \"69827740 2126\" atau \"69827740-2126\"), gabungkan sebagai customer_id \"69827740(2126)\".\n")
 	sb.WriteString("- Perhatikan pattern \"Beli X Y (Z)\" dimana X=product_code, Y=customer_id, Z=zone. Contoh: \"Beli 3dm 69827740 (2126)\" harus menghasilkan product_code=\"3DM\", customer_id=\"69827740(2126)\".\n")
 	sb.WriteString("- Product code bisa dalam format lowercase (3dm) atau uppercase (3DM), selalu konversi ke uppercase.\n")
-	sb.WriteString("- Jika user menyebut \"via saldo ya mas\" atau \"pakai saldo\", anggap sebagai payment_method=\"deposit\".\n\n")
+	sb.WriteString("- Jika user menyebut \"via saldo ya mas\" atau \"pakai saldo\", anggap sebagai payment_method=\"deposit\".\n")
+	sb.WriteString("- Jika user menyebut \"bri\", \"bank bri\", \"via bank\", \"transfer bank\", anggap sebagai payment_method=\"bri\".\n")
+	sb.WriteString("- Jika user menyebut \"qris\", \"qr\", \"scan\", anggap sebagai payment_method=\"qris\".\n\n")
+	sb.WriteString("- Payment_method hanya boleh deposit/saldo, bri, atau qris.\n\n")
+
+	// --- Product & category recognition rules ---
+	sb.WriteString("Tips parsing produk & layanan:\n")
+	sb.WriteString("- \"token\"/\"listrik\"/\"pln\"/\"token listrik\" → product_query=\"token listrik\", product_type=\"prabayar\".\n")
+	sb.WriteString("- \"tagihan pln\"/\"bayar listrik\"/\"cek tagihan listrik\" → intent=check_bill, product_type=\"pascabayar\".\n")
+	sb.WriteString("- \"bpjs\"/\"tagihan bpjs\" → intent=check_bill, product_type=\"pascabayar\".\n")
+	sb.WriteString("- \"pdam\"/\"air\"/\"tagihan air\" → intent=check_bill, product_type=\"pascabayar\".\n")
+	sb.WriteString("- \"pulsa\"/\"isi pulsa\"/\"pulsa telkomsel\" → product_query=nama pulsa, product_type=\"prabayar\".\n")
+	sb.WriteString("- \"paket data\"/\"kuota\"/\"internet\"/\"data telkomsel\" → product_query=keyword data, product_type=\"prabayar\".\n")
+	sb.WriteString("- \"diamond\"/\"dm\"/\"top up ml\"/\"top up ff\"/\"gems\" → product_query=nama game topup.\n")
+	sb.WriteString("- \"voucher\"/\"voucher game\"/\"steam\"/\"netflix\"/\"spotify\" → product_query=keyword voucher/streaming.\n")
+	sb.WriteString("- \"ewallet\"/\"e-money\"/\"dana\"/\"gopay\"/\"ovo\"/\"shopeepay\" → product_query=keyword e-wallet.\n\n")
+
+	sb.WriteString("Tips parsing nomor/ID target:\n")
+	sb.WriteString("- Nomor HP 10-13 digit (08xxxxx) → customer_id untuk pulsa/data.\n")
+	sb.WriteString("- ID Meter PLN 11-12 digit → customer_id untuk token/tagihan PLN.\n")
+	sb.WriteString("- Nomor BPJS 13 digit → customer_id untuk cek tagihan BPJS.\n")
+	sb.WriteString("- Jika user belum kasih nomor/ID, JANGAN isi customer_id, biarkan kosong.\n")
+	sb.WriteString("- Angka yang diawali \"Rp\" atau diikuti \"rb\"/\"ribu\"/\"k\" adalah nominal, BUKAN customer_id.\n\n")
+
+	sb.WriteString("Tips parsing nominal:\n")
+	sb.WriteString("- \"20k\"/\"20rb\"/\"20ribu\"/\"20.000\" → 20000\n")
+	sb.WriteString("- \"100rb\"/\"100k\"/\"100ribu\" → 100000\n")
+	sb.WriteString("- \"1jt\"/\"1juta\"/\"1m\" → 1000000\n\n")
+
+	// --- Examples ---
 	sb.WriteString("Contoh:\n")
 	sb.WriteString("User: \"pulsa telkomsel 20k\"\n")
 	sb.WriteString(`Output: {"intent":"price_lookup","confidence":0.9,"reply":"","requires_confirmation":false,"entities":{"product_query":"pulsa telkomsel 20k","product_type":"prabayar"}}` + "\n")
@@ -281,12 +312,44 @@ func buildIntentPrompt(input IntentInput) geminiRequest {
 	sb.WriteString(`Output: {"intent":"create_prepaid","confidence":0.92,"reply":"Sip, aku siapin transaksinya ya.","requires_confirmation":false,"entities":{"product_code":"ML3","customer_id":"69827740","payment_method":"deposit"},"tool_call":{"name":"transaksi_create","arguments":{"code":"ML3","target":"69827740","metode":"deposit"}}}` + "\n")
 	sb.WriteString("User: \"bantu deposit 150k via qris dong\"\n")
 	sb.WriteString(`Output: {"intent":"create_deposit","confidence":0.9,"reply":"Oke, aku buatin deposit QRIS-nya.","requires_confirmation":false,"entities":{"method":"qris","amount":"150000"},"tool_call":{"name":"deposit_create","arguments":{"metode":"qris","nominal":"150000"}}}` + "\n")
+	sb.WriteString("User: \"deposit 100k via bri\"\n")
+	sb.WriteString(`Output: {"intent":"create_deposit","confidence":0.9,"reply":"Oke, aku buatin deposit BRI-nya.","requires_confirmation":false,"entities":{"method":"bri","amount":"100000"},"tool_call":{"name":"deposit_create","arguments":{"metode":"bri","nominal":"100000"}}}` + "\n")
+	sb.WriteString("User: \"beli ML3 69827740 via bri\"\n")
+	sb.WriteString(`Output: {"intent":"create_prepaid","confidence":0.92,"reply":"Sip, aku proses via BRI ya.","requires_confirmation":false,"entities":{"product_code":"ML3","customer_id":"69827740","payment_method":"bri"},"tool_call":{"name":"transaksi_create","arguments":{"code":"ML3","target":"69827740","metode":"bri"}}}` + "\n")
 	sb.WriteString("User: \"tolong isi ML3 ke id 69827740 server 2126 pakai saldo\"\n")
 	sb.WriteString(`Output: {"intent":"create_prepaid","confidence":0.94,"reply":"Siap, aku proses dengan saldo ya.","requires_confirmation":false,"entities":{"product_code":"ML3","customer_id":"69827740(2126)","customer_zone":"2126","payment_method":"deposit"},"tool_call":{"name":"transaksi_create","arguments":{"code":"ML3","target":"69827740(2126)","metode":"deposit","server":"2126"}}}` + "\n")
 	sb.WriteString("User: \"Beli 3dm 69827740 (2126)\"\n")
 	sb.WriteString(`Output: {"intent":"create_prepaid","confidence":0.95,"reply":"Sip, aku proses transaksinya ya.","requires_confirmation":false,"entities":{"product_code":"3DM","customer_id":"69827740(2126)","customer_zone":"2126","payment_method":"deposit"},"tool_call":{"name":"transaksi_create","arguments":{"code":"3DM","target":"69827740(2126)","metode":"deposit","server":"2126"}}}` + "\n")
 	sb.WriteString("User: \"Beli 3dm 69827740 (2126) via saldo ya mas\"\n")
 	sb.WriteString(`Output: {"intent":"create_prepaid","confidence":0.95,"reply":"Sip, aku proses transaksinya ya.","requires_confirmation":false,"entities":{"product_code":"3DM","customer_id":"69827740(2126)","customer_zone":"2126","payment_method":"deposit"},"tool_call":{"name":"transaksi_create","arguments":{"code":"3DM","target":"69827740(2126)","metode":"deposit","server":"2126"}}}` + "\n")
+	sb.WriteString("User: \"cek status transaksi ref 0192837465\"\n")
+	sb.WriteString(`Output: {"intent":"check_status","confidence":0.9,"reply":"Oke, aku cek status transaksinya dulu ya.","requires_confirmation":false,"entities":{"ref_id":"0192837465","product_type":"prabayar"},"tool_call":{"name":"transaksi_status","arguments":{"reff_id":"0192837465","type":"prabayar"}}}` + "\n")
+
+	// --- Varied real-world examples ---
+	sb.WriteString("User: \"token 100rb\"\n")
+	sb.WriteString(`Output: {"intent":"price_lookup","confidence":0.9,"reply":"","requires_confirmation":false,"entities":{"product_query":"token listrik 100000","product_type":"prabayar"}}` + "\n")
+	sb.WriteString("User: \"isi token pln 12345678901\"\n")
+	sb.WriteString(`Output: {"intent":"create_prepaid","confidence":0.9,"reply":"Sip, mau isi token PLN ya.","requires_confirmation":false,"entities":{"product_query":"token pln","customer_id":"12345678901","product_type":"prabayar"}}` + "\n")
+	sb.WriteString("User: \"isi pulsa 20rb ke 081234567890\"\n")
+	sb.WriteString(`Output: {"intent":"create_prepaid","confidence":0.9,"reply":"Oke, aku cari pulsa 20rb-nya.","requires_confirmation":false,"entities":{"product_query":"pulsa 20000","customer_id":"081234567890","product_type":"prabayar"}}` + "\n")
+	sb.WriteString("User: \"ada diamond ml ga?\"\n")
+	sb.WriteString(`Output: {"intent":"price_lookup","confidence":0.88,"reply":"","requires_confirmation":false,"entities":{"product_query":"diamond mobile legend","product_type":"prabayar","provider":"mobile legend"}}` + "\n")
+	sb.WriteString("User: \"top up ff 12345 50k dong\"\n")
+	sb.WriteString(`Output: {"intent":"create_prepaid","confidence":0.9,"reply":"Sip, aku cariin top up FF-nya ya.","requires_confirmation":false,"entities":{"product_query":"free fire 50000","customer_id":"12345","product_type":"prabayar","provider":"free fire"}}` + "\n")
+	sb.WriteString("User: \"cek tagihan pln 12345678901\"\n")
+	sb.WriteString(`Output: {"intent":"check_bill","confidence":0.92,"reply":"Oke, aku cek tagihan PLN-nya.","requires_confirmation":false,"entities":{"product_query":"pln pascabayar","customer_id":"12345678901","product_type":"pascabayar"},"tool_call":{"name":"tagihan_cek","arguments":{"code":"PLNPASCA","customer_no":"12345678901"}}}` + "\n")
+	sb.WriteString("User: \"bayar bpjs 0001234567890\"\n")
+	sb.WriteString(`Output: {"intent":"check_bill","confidence":0.9,"reply":"Oke, aku cek tagihan BPJS-nya dulu.","requires_confirmation":false,"entities":{"product_query":"bpjs","customer_id":"0001234567890","product_type":"pascabayar"},"tool_call":{"name":"tagihan_cek","arguments":{"code":"BPJS","customer_no":"0001234567890"}}}` + "\n")
+	sb.WriteString("User: \"mau beli kuota xl 10gb\"\n")
+	sb.WriteString(`Output: {"intent":"price_lookup","confidence":0.88,"reply":"","requires_confirmation":false,"entities":{"product_query":"kuota xl 10gb","product_type":"prabayar","provider":"xl"}}` + "\n")
+	sb.WriteString("User: \"ada yg jual token listrik?\"\n")
+	sb.WriteString(`Output: {"intent":"price_lookup","confidence":0.85,"reply":"","requires_confirmation":false,"entities":{"product_query":"token listrik","product_type":"prabayar"}}` + "\n")
+	sb.WriteString("User: \"ada voucher netflix ga\"\n")
+	sb.WriteString(`Output: {"intent":"price_lookup","confidence":0.85,"reply":"","requires_confirmation":false,"entities":{"product_query":"voucher netflix","product_type":"prabayar","provider":"netflix"}}` + "\n")
+	sb.WriteString("User: \"top up dana 50rb ke 081234567890\"\n")
+	sb.WriteString(`Output: {"intent":"create_prepaid","confidence":0.9,"reply":"Oke, aku proses top up DANA-nya.","requires_confirmation":false,"entities":{"product_query":"dana 50000","customer_id":"081234567890","product_type":"prabayar","provider":"dana"}}` + "\n")
+	sb.WriteString("User: \"paket data indosat 5gb murah\"\n")
+	sb.WriteString(`Output: {"intent":"price_lookup","confidence":0.88,"reply":"","requires_confirmation":false,"entities":{"product_query":"paket data indosat 5gb","product_type":"prabayar","provider":"indosat"}}` + "\n")
 	sb.WriteString("User: \"halo\"\n")
 	sb.WriteString(`Output: {"intent":"smalltalk_greeting","confidence":0.95,"reply":"Halo! Aku menyediakan berbagai layanan digital:\n\n📱 Pulsa & Paket Data - Telkomsel, Indosat, XL, Tri, Smartfren\n🎮 Top Up Game - Mobile Legends, Free Fire, PUBG, dll\n⚡ Token Listrik - Prabayar & Pascabayar\n💳 Bayar Tagihan - PLN, PDAM, BPJS, dll\n💰 Deposit & Transfer - QRIS, Bank Transfer, E-wallet\n\nKetik nama produk yang kamu cari, contoh: \"pulsa telkomsel 20k\" atau \"top up ML\"","requires_confirmation":false,"entities":{}}` + "\n\n")
 	sb.WriteString("User: \"hai\"\n")
@@ -335,11 +398,15 @@ func (c *Client) callGemini(ctx context.Context, payload geminiRequest) (string,
 		return "", "", err
 	}
 
-	for _, k := range keys {
+	skipped := 0
+	for idx, k := range keys {
 		if k.CooldownUntil != nil && time.Now().Before(*k.CooldownUntil) {
+			c.logger.Debug("skipping key on cooldown", "key_index", idx, "cooldown_until", k.CooldownUntil.Format(time.RFC3339))
+			skipped++
 			continue
 		}
 
+		c.logger.Info("trying gemini key", "key_index", idx, "total_keys", len(keys), "skipped", skipped)
 		res := c.invokeWithKey(ctx, k, payload)
 		if res.err == nil {
 			return res.text, res.key, nil
@@ -347,15 +414,21 @@ func (c *Client) callGemini(ctx context.Context, payload geminiRequest) (string,
 		lastErr = res.err
 
 		if errors.Is(res.err, errQuotaExceeded) || errors.Is(res.err, errUnauthorised) {
+			c.logger.Warn("gemini key rate limited, rotating", "key_index", idx, "error", res.err, "cooldown", c.cooldown)
 			if err := c.repo.SetCooldownUntil(ctx, k.ID, time.Now().Add(c.cooldown)); err != nil {
 				c.logger.Error("set cooldown failed", "error", err, "key", k.ID)
 			}
+			// Invalidate cache so next call sees updated cooldown
+			c.mu.Lock()
+			c.cached = nil
+			c.mu.Unlock()
 		}
 	}
 
 	if lastErr == nil {
 		lastErr = fmt.Errorf("no available gemini keys")
 	}
+	c.logger.Error("all gemini keys exhausted", "total_keys", len(keys), "skipped_cooldown", skipped)
 	c.metrics.GeminiRequests.WithLabelValues("failed").Inc()
 	return "", "", lastErr
 }

@@ -11,15 +11,15 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Repository provides typed access to Supabase (Postgres) resources.
-type Repository struct {
+// PostgresRepository provides typed access to Supabase (Postgres) resources.
+type PostgresRepository struct {
 	pool   *pgxpool.Pool
 	logger *slog.Logger
 	schema string
 }
 
-// New opens a new connection pool to the database with the desired search_path.
-func New(ctx context.Context, databaseURL, schema string, logger *slog.Logger) (*Repository, error) {
+// NewPostgres opens a new connection pool to the database with the desired search_path.
+func NewPostgres(ctx context.Context, databaseURL, schema string, logger *slog.Logger) (*PostgresRepository, error) {
 	cfg, err := pgxpool.ParseConfig(databaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse database url: %w", err)
@@ -38,7 +38,7 @@ func New(ctx context.Context, databaseURL, schema string, logger *slog.Logger) (
 		return nil, fmt.Errorf("create pool: %w", err)
 	}
 
-	r := &Repository{
+	r := &PostgresRepository{
 		pool:   pool,
 		logger: logger.With("component", "repo"),
 		schema: schema,
@@ -53,26 +53,26 @@ func New(ctx context.Context, databaseURL, schema string, logger *slog.Logger) (
 }
 
 // Close releases the connection pool.
-func (r *Repository) Close() {
+func (r *PostgresRepository) Close() {
 	if r.pool != nil {
 		r.pool.Close()
 	}
 }
 
 // Ping ensures the database is reachable.
-func (r *Repository) Ping(ctx context.Context) error {
+func (r *PostgresRepository) Ping(ctx context.Context) error {
 	return r.pool.Ping(ctx)
 }
 
 // WithTx executes fn within a database transaction.
-func (r *Repository) WithTx(ctx context.Context, fn func(pgx.Tx) error) error {
+func (r *PostgresRepository) WithTx(ctx context.Context, fn func(pgx.Tx) error) error {
 	return pgx.BeginFunc(ctx, r.pool, func(tx pgx.Tx) error {
 		return fn(tx)
 	})
 }
 
 // UpsertUserByWA stores or updates the user profile based on WhatsApp ID.
-func (r *Repository) UpsertUserByWA(ctx context.Context, profile UserProfile) (*User, error) {
+func (r *PostgresRepository) UpsertUserByWA(ctx context.Context, profile UserProfile) (*User, error) {
 	const q = `
 INSERT INTO users (wa_id, wa_jid, display_name, phone_number, language_preference, timezone, updated_at)
 VALUES ($1, $2, $3, $4, COALESCE($5, 'id-ID'), COALESCE($6, 'Asia/Jakarta'), NOW())
@@ -102,7 +102,7 @@ RETURNING id, wa_id, wa_jid, display_name, phone_number, language_preference, ti
 }
 
 // InsertMessage stores a message record for auditing purposes.
-func (r *Repository) InsertMessage(ctx context.Context, msg MessageRecord) error {
+func (r *PostgresRepository) InsertMessage(ctx context.Context, msg MessageRecord) error {
 	const q = `
 INSERT INTO messages (user_id, direction, message_type, content, media_url, raw_payload)
 VALUES ($1, $2, $3, $4, $5, $6);
@@ -122,7 +122,7 @@ VALUES ($1, $2, $3, $4, $5, $6);
 }
 
 // ListRecentMessages returns the latest messages exchanged with the user.
-func (r *Repository) ListRecentMessages(ctx context.Context, userID string, limit int) ([]MessageRecord, error) {
+func (r *PostgresRepository) ListRecentMessages(ctx context.Context, userID string, limit int) ([]MessageRecord, error) {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -155,12 +155,12 @@ LIMIT $2;
 }
 
 // RunMigrations applies schema migrations on the connected database.
-func (r *Repository) RunMigrations(ctx context.Context, filesystem fs.FS) error {
+func (r *PostgresRepository) RunMigrations(ctx context.Context, filesystem fs.FS) error {
 	return ApplyMigrations(ctx, r.pool, filesystem)
 }
 
 // UpdateAPIKeyCooldown sets cooldown time for a given API key.
-func (r *Repository) UpdateAPIKeyCooldown(ctx context.Context, id string, until time.Time) error {
+func (r *PostgresRepository) UpdateAPIKeyCooldown(ctx context.Context, id string, until time.Time) error {
 	const q = `UPDATE api_keys SET cooldown_until = $2, updated_at = NOW() WHERE id = $1`
 	ct, err := r.pool.Exec(ctx, q, id, until)
 	if err != nil {

@@ -53,7 +53,15 @@ func run() error {
 
 	metricRegistry := metrics.Registry(cfg.MetricsNamespace)
 
-	repository, err := repo.New(ctx, cfg.DatabaseURL, cfg.SupabaseSchema, logger)
+	var repository repo.Repository
+
+	if cfg.IsSQLite {
+		logger.Info("using sqlite database", "path", cfg.DatabaseURL)
+		repository, err = repo.NewSQLite(ctx, cfg.DatabaseURL, logger)
+	} else {
+		logger.Info("using postgres database")
+		repository, err = repo.NewPostgres(ctx, cfg.DatabaseURL, cfg.SupabaseSchema, logger)
+	}
 	if err != nil {
 		return fmt.Errorf("init repository: %w", err)
 	}
@@ -112,6 +120,15 @@ func run() error {
 		DepositFeePercent:    cfg.AtlanticDepositFeePercent,
 	})
 	waClient.SetMessageProcessor(convoEngine)
+
+	// Fetch and save product catalog in background on startup.
+	go func() {
+		catalogCtx, catalogCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer catalogCancel()
+		if err := atlClient.FetchAndSaveAllProducts(catalogCtx, "data/products.json"); err != nil {
+			logger.Warn("failed to fetch product catalog on startup", "error", err)
+		}
+	}()
 
 	webhookProcessor := handlers.NewAtlanticWebhookProcessor(repository, waClient, metricRegistry, logger, atlClient)
 	webhookHandler := atl.NewWebhookHandler(logger, metricRegistry, cfg.AtlanticWebhookSecretMD5Username, cfg.AtlanticWebhookSecretMD5Password, webhookProcessor)
