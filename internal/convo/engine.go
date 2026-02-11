@@ -26,6 +26,7 @@ import (
 	"bot-jual/internal/wa"
 
 	"github.com/google/uuid"
+	"github.com/skip2/go-qrcode"
 	waProto "go.mau.fi/whatsmeow/proto/waE2E"
 	"go.mau.fi/whatsmeow/types"
 	"go.mau.fi/whatsmeow/types/events"
@@ -2193,21 +2194,43 @@ func formatCurrency(value float64) string {
 
 func (e *Engine) sendCheckoutQRImage(ctx context.Context, to types.JID, userID string, checkout map[string]any, caption, category string) bool {
 	imageURL := firstStringMap(checkout, "qr_image")
-	if imageURL == "" {
-		return false
-	}
-	data, mimeType, err := fetchQRImageData(ctx, imageURL)
-	if err != nil {
-		e.logger.Warn("failed preparing qr image", "error", err)
-		return false
-	}
-	if mimeType == "" {
-		mimeType = http.DetectContentType(data)
-		if mimeType == "" {
-			mimeType = "image/png"
+	qrString := firstStringMap(checkout, "qr_string")
+
+	if imageURL != "" {
+		data, mimeType, err := fetchQRImageData(ctx, imageURL)
+		if err == nil {
+			if mimeType == "" {
+				mimeType = http.DetectContentType(data)
+				if mimeType == "" {
+					mimeType = "image/png"
+				}
+			}
+			if err := e.gateway.SendImage(ctx, to, data, mimeType, caption); err == nil {
+				if err := e.repo.InsertMessage(ctx, repo.MessageRecord{
+					UserID:    userID,
+					Direction: "outgoing",
+					Type:      category + "_qr_image",
+					MediaURL:  optionalString(imageURL),
+				}); err != nil {
+					e.logger.Warn("failed logging outgoing qr image", "error", err)
+				}
+				return true
+			}
+			e.logger.Warn("failed sending qr image", "error", err)
+		} else {
+			e.logger.Warn("failed preparing qr image", "error", err)
 		}
 	}
-	if err := e.gateway.SendImage(ctx, to, data, mimeType, caption); err != nil {
+
+	if qrString == "" {
+		return false
+	}
+	data, err := qrcode.Encode(qrString, qrcode.Medium, 256)
+	if err != nil {
+		e.logger.Warn("failed generating qr image", "error", err)
+		return false
+	}
+	if err := e.gateway.SendImage(ctx, to, data, "image/png", caption); err != nil {
 		e.logger.Warn("failed sending qr image", "error", err)
 		return false
 	}
