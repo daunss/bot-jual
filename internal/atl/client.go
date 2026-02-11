@@ -594,6 +594,32 @@ func (c *Client) CreateDeposit(ctx context.Context, req DepositRequest) (*Deposi
 	if resp.NetAmount > 0 {
 		resp.Checkout["net_amount"] = resp.NetAmount
 	}
+	// Populate bank/VA info if provider returns it at top-level.
+	if firstString(resp.Checkout, "bank") == "" {
+		if v := firstString(data, "bank", "bank_name", "bank_code", "bank_type"); v != "" {
+			resp.Checkout["bank"] = v
+		}
+	}
+	if firstString(resp.Checkout, "tujuan", "no_rekening", "account_no") == "" {
+		if v := firstString(data, "tujuan", "no_rekening", "account_no", "rekening", "no_rek"); v != "" {
+			resp.Checkout["tujuan"] = v
+		}
+	}
+	if firstString(resp.Checkout, "account_name", "atas_nama") == "" {
+		if v := firstString(data, "account_name", "atas_nama", "nama", "name"); v != "" {
+			resp.Checkout["account_name"] = v
+		}
+	}
+	if firstString(resp.Checkout, "va_number", "virtual_account", "no_va", "va") == "" {
+		if v := firstString(data, "va_number", "virtual_account", "no_va", "va", "payment_no", "pay_code", "payment_code"); v != "" {
+			resp.Checkout["va_number"] = v
+		}
+	}
+	if firstString(resp.Checkout, "expired_at") == "" {
+		if v := firstString(data, "expired_at", "expire_at", "expired", "expire_time"); v != "" {
+			resp.Checkout["expired_at"] = v
+		}
+	}
 	return resp, nil
 }
 

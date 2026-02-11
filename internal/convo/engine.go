@@ -2490,6 +2490,15 @@ func formatBankTransferInfo(checkout map[string]any) string {
 		return "Instruksi transfer akan dikirim setelah tersedia."
 	}
 	bank := firstStringMap(checkout, "bank")
+	if bank == "" {
+		bank = firstStringMap(checkout, "bank_name")
+	}
+	if bank == "" {
+		bank = firstStringMap(checkout, "bank_code")
+	}
+	if bank == "" {
+		bank = firstStringMap(checkout, "bank_type")
+	}
 	tujuan := firstStringMap(checkout, "tujuan")
 	if tujuan == "" {
 		tujuan = firstStringMap(checkout, "no_rekening")
@@ -2497,9 +2506,39 @@ func formatBankTransferInfo(checkout map[string]any) string {
 	if tujuan == "" {
 		tujuan = firstStringMap(checkout, "account_no")
 	}
+	if tujuan == "" {
+		tujuan = firstStringMap(checkout, "rekening")
+	}
+	if tujuan == "" {
+		tujuan = firstStringMap(checkout, "no_rek")
+	}
+	if tujuan == "" {
+		tujuan = firstStringMap(checkout, "va_number")
+	}
+	if tujuan == "" {
+		tujuan = firstStringMap(checkout, "virtual_account")
+	}
+	if tujuan == "" {
+		tujuan = firstStringMap(checkout, "no_va")
+	}
+	if tujuan == "" {
+		tujuan = firstStringMap(checkout, "va")
+	}
+	if tujuan == "" {
+		tujuan = firstStringMap(checkout, "payment_no")
+	}
+	if tujuan == "" {
+		tujuan = firstStringMap(checkout, "pay_code")
+	}
+	if tujuan == "" {
+		tujuan = firstStringMap(checkout, "payment_code")
+	}
 	atasNama := firstStringMap(checkout, "atas_nama")
 	if atasNama == "" {
 		atasNama = firstStringMap(checkout, "account_name")
+	}
+	if atasNama == "" {
+		atasNama = firstStringMap(checkout, "nama")
 	}
 	nominal := firstStringMap(checkout, "nominal")
 	if nominal == "" {
